@@ -3,340 +3,139 @@ const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http);
 
-// In-memory storage for rooms
-const rooms = new Map(); // roomId → { messages: [{text, timestamp}], users: Set<socket.id> }
+// Store rooms (messages stay until app restarts)
+const rooms = new Map();
 
 app.get('/', (req, res) => {
-  const roomId = Math.floor(100 + Math.random() * 900); // 100–999
+  const roomId = Math.floor(100 + Math.random() * 900); // random 3-digit
   res.redirect(`/${roomId}`);
 });
 
 app.get('/:room', (req, res) => {
-  const roomId = req.params.room.padStart(3, '0'); // Ensure 3 digits
+  const roomId = req.params.room;
   res.send(`
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Hayden Meet • Room ${roomId}</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hayden Meet - Room ${roomId}</title>
   <style>
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
-    }
-    header {
-      background: #161b22;
-      padding: 12px 20px;
-      text-align: center;
-      border-bottom: 1px solid #30363d;
-    }
-    h1 {
-      margin: 0;
-      font-size: 1.5rem;
-      color: #58a6ff;
-    }
-    #room-info {
-      margin: 10px 0;
-      font-size: 1.1rem;
-    }
-    #controls {
-      text-align: center;
-      padding: 12px;
-      background: #161b22;
-    }
-    button {
-      background: #238636;
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      margin: 0 6px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 0.95rem;
-    }
-    button:hover { background: #2ea043; }
-    #video-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 12px;
-      padding: 20px;
-    }
-    video {
-      width: 100%;
-      background: black;
-      border: 2px solid #30363d;
-      border-radius: 8px;
-    }
-    #chat {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: #161b22;
-      border-top: 1px solid #30363d;
-      padding: 12px 20px;
-    }
-    #messages {
-      height: 180px;
-      overflow-y: auto;
-      margin-bottom: 10px;
-      padding: 8px;
-      background: #0d1117;
-      border-radius: 6px;
-    }
-    #messages p {
-      margin: 6px 0;
-      font-size: 0.9rem;
-    }
-    #chat-input-area {
-      display: flex;
-    }
-    #message {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid #30363d;
-      border-radius: 6px 0 0 6px;
-      background: #0d1117;
-      color: #c9d1d9;
-    }
-    #send-btn {
-      border-radius: 0 6px 6px 0;
-    }
-    #status {
-      text-align: center;
-      padding: 10px;
-      color: #f85149;
-      font-weight: bold;
-    }
+    body { margin:0; font-family:Arial; background:#0d1117; color:#c9d1d9; }
+    header { background:#161b22; padding:15px; text-align:center; }
+    #video-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px; padding:20px; }
+    video { width:100%; background:#000; border:2px solid #30363d; border-radius:8px; }
+    #controls { text-align:center; padding:10px; background:#161b22; }
+    button { background:#238636; color:white; border:none; padding:10px 20px; margin:5px; border-radius:6px; cursor:pointer; }
+    button:hover { background:#2ea043; }
+    #chat { position:fixed; bottom:0; left:0; right:0; background:#161b22; padding:15px; border-top:1px solid #30363d; }
+    #messages { height:180px; overflow-y:auto; background:#0d1117; padding:10px; border-radius:6px; margin-bottom:10px; }
+    input { flex:1; padding:10px; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; }
   </style>
 </head>
 <body>
   <header>
     <h1>Hayden Meet</h1>
-    <div id="room-info">Room: <strong>${roomId}</strong> • <button onclick="copyRoom()">Copy Code</button></div>
-    <div id="user-count">(1 person here)</div>
+    <div>Room Code: <strong>${roomId}</strong> <button onclick="navigator.clipboard.writeText('${roomId}').then(()=>alert('Code copied! Share it.'))">Copy Code</button></div>
+    <div id="users">(1 online)</div>
   </header>
-
   <div id="video-grid">
-    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="local" autoplay playsinline muted></video>
   </div>
-
   <div id="controls">
-    <button id="toggleVideo">Mute Video</button>
-    <button id="toggleAudio">Mute Mic</button>
+    <button id="vidBtn">Mute Video</button>
+    <button id="audBtn">Mute Mic</button>
   </div>
-
   <div id="chat">
     <div id="messages"></div>
-    <div id="chat-input-area">
-      <input id="message" placeholder="Type a message..." autocomplete="off"/>
-      <button id="send-btn">Send</button>
-    </div>
+    <div style="display:flex"><input id="msg" placeholder="Type message..."><button onclick="sendMsg()">Send</button></div>
   </div>
-
-  <div id="status">Waiting for camera & mic...</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    const ROOM_ID = "${roomId}";
-    const localVideo = document.getElementById('localVideo');
-    let localStream;
-    const peers = {};
-    let videoEnabled = true;
-    let audioEnabled = true;
+    const ROOM = "${roomId}";
+    let localStream, peers = {}, videoOn = true, audioOn = true;
+    const config = { iceServers: [{urls:"stun:stun.l.google.com:19302"},{urls:"turn:openrelay.metered.ca:80"},{urls:"turn:openrelay.metered.ca:443"},{urls:"turn:openrelay.metered.ca:443?transport=tcp"}] };
+    const localVid = document.getElementById('local');
 
-    const config = {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "turn:openrelay.metered.ca:80" },
-        { urls: "turn:openrelay.metered.ca:443" },
-        { urls: "turn:openrelay.metered.ca:443?transport=tcp" }
-      ]
-    };
+    navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s => {
+      localStream = s;
+      localVid.srcObject = s;
+      socket.emit('join-room', ROOM);
+    }).catch(e => console.error(e));
 
-    // Start camera & mic
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
-        localStream = stream;
-        localVideo.srcObject = stream;
-        socket.emit('join-room', ROOM_ID);
-        document.getElementById('status').textContent = 'Connected! Invite others with the room code.';
-      })
-      .catch(err => {
-        document.getElementById('status').textContent = 'Error: ' + err.message;
-      });
+    socket.on('user-connected', id => createPeer(id, true));
+    socket.on('user-disconnected', id => { if(peers[id]){peers[id].close(); delete peers[id]; document.getElementById('v'+id)?.remove(); }});
+    socket.on('user-count', n => document.getElementById('users').textContent = `(${n} online)`);
 
-    socket.on('user-connected', userId => {
-      createPeerConnection(userId, true);
-    });
-
-    socket.on('user-disconnected', userId => {
-      if (peers[userId]) {
-        peers[userId].close();
-        delete peers[userId];
-        const v = document.getElementById('remote-' + userId);
-        if (v) v.remove();
-      }
-    });
-
-    socket.on('user-count', count => {
-      document.getElementById('user-count').textContent = \`(\${count} person\${count === 1 ? '' : 's'} here)\`;
-    });
-
-    socket.on('chat-history', msgs => {
-      msgs.forEach(m => addChatMessage(m.text, m.time));
-    });
-
-    socket.on('chat-message', ({text, time}) => {
-      addChatMessage(text, time);
-    });
-
-    function createPeerConnection(userId, initiator) {
+    function createPeer(id, initiator) {
       const pc = new RTCPeerConnection(config);
-      peers[userId] = pc;
-
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
+      peers[id] = pc;
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
       pc.ontrack = e => {
-        let video = document.getElementById('remote-' + userId);
-        if (!video) {
-          video = document.createElement('video');
-          video.id = 'remote-' + userId;
-          video.autoplay = true;
-          video.playsinline = true;
-          document.getElementById('video-grid').appendChild(video);
+        let v = document.getElementById('v'+id);
+        if (!v) {
+          v = document.createElement('video');
+          v.id = 'v'+id;
+          v.autoplay = true;
+          document.getElementById('video-grid').appendChild(v);
         }
-        video.srcObject = e.streams[0];
+        v.srcObject = e.streams[0];
       };
-
-      pc.onicecandidate = e => {
-        if (e.candidate) {
-          socket.emit('ice-candidate', ROOM_ID, userId, e.candidate);
-        }
-      };
-
-      if (initiator) {
-        pc.createOffer()
-          .then(offer => pc.setLocalDescription(offer))
-          .then(() => socket.emit('offer', ROOM_ID, userId, pc.localDescription));
-      }
+      pc.onicecandidate = e => e.candidate && socket.emit('candidate', ROOM, id, e.candidate);
+      if (initiator) pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => socket.emit('offer', ROOM, id, pc.localDescription));
     }
 
-    socket.on('offer', (fromId, offer) => {
-      createPeerConnection(fromId, false);
-      const pc = peers[fromId];
-      pc.setRemoteDescription(new RTCSessionDescription(offer))
-        .then(() => pc.createAnswer())
-        .then(answer => pc.setLocalDescription(answer))
-        .then(() => socket.emit('answer', ROOM_ID, fromId, pc.localDescription));
+    socket.on('offer', (from, offer) => {
+      createPeer(from, false);
+      const pc = peers[from];
+      pc.setRemoteDescription(offer).then(() => pc.createAnswer()).then(a => pc.setLocalDescription(a)).then(() => socket.emit('answer', ROOM, from, pc.localDescription));
     });
+    socket.on('answer', (from, ans) => peers[from].setRemoteDescription(ans));
+    socket.on('candidate', (from, cand) => peers[from].addIceCandidate(cand));
 
-    socket.on('answer', (fromId, answer) => {
-      peers[fromId].setRemoteDescription(new RTCSessionDescription(answer));
-    });
-
-    socket.on('ice-candidate', (fromId, candidate) => {
-      peers[fromId].addIceCandidate(new RTCIceCandidate(candidate));
-    });
-
-    // Chat
-    function addChatMessage(text, time) {
-      const p = document.createElement('p');
-      p.innerHTML = \`<small>[\${time}]</small> \${text}\`;
-      document.getElementById('messages').appendChild(p);
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    }
-
-    function sendMessage() {
-      const input = document.getElementById('message');
-      const text = input.value.trim();
-      if (text) {
-        socket.emit('chat-message', ROOM_ID, text);
+    function sendMsg() {
+      const input = document.getElementById('msg');
+      if (input.value.trim()) {
+        socket.emit('chat', ROOM, input.value.trim());
         input.value = '';
       }
     }
+    document.getElementById('msg').addEventListener('keypress', e => { if(e.key==='Enter') sendMsg(); });
 
-    document.getElementById('message').addEventListener('keypress', e => {
-      if (e.key === 'Enter') sendMessage();
-    });
-
-    document.getElementById('send-btn').onclick = sendMessage;
-
-    // Mute controls
-    document.getElementById('toggleVideo').onclick = () => {
-      videoEnabled = !videoEnabled;
-      localStream.getVideoTracks()[0].enabled = videoEnabled;
-      document.getElementById('toggleVideo').textContent = videoEnabled ? 'Mute Video' : 'Unmute Video';
-    };
-
-    document.getElementById('toggleAudio').onclick = () => {
-      audioEnabled = !audioEnabled;
-      localStream.getAudioTracks()[0].enabled = audioEnabled;
-      document.getElementById('toggleAudio').textContent = audioEnabled ? 'Mute Mic' : 'Unmute Mic';
-    };
-
-    function copyRoom() {
-      navigator.clipboard.writeText(ROOM_ID).then(() => alert('Room code copied!'));
-    }
+    document.getElementById('vidBtn').onclick = () => { videoOn = !videoOn; localStream.getVideoTracks()[0].enabled = videoOn; document.getElementById('vidBtn').textContent = videoOn ? 'Mute Video' : 'Unmute Video'; };
+    document.getElementById('audBtn').onclick = () => { audioOn = !audioOn; localStream.getAudioTracks()[0].enabled = audioOn; document.getElementById('audBtn').textContent = audioOn ? 'Mute Mic' : 'Unmute Mic'; };
   </script>
 </body>
 </html>
   `);
 });
 
-// Socket.IO logic
+// Socket.io backend
 io.on('connection', socket => {
-  socket.on('join-room', roomId => {
-    socket.join(roomId);
+  socket.on('join-room', room => {
+    socket.join(room);
+    if (!rooms.has(room)) rooms.set(room, {users: new Set()});
+    const r = rooms.get(room);
+    r.users.add(socket.id);
+    io.to(room).emit('user-count', r.users.size);
+    socket.to(room).emit('user-connected', socket.id);
 
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, { messages: [], users: new Set() });
-    }
+    socket.on('chat', (room, msg) => io.to(room).emit('chat', msg));
 
-    const room = rooms.get(roomId);
-    room.users.add(socket.id);
-
-    // Notify others
-    socket.to(roomId).emit('user-connected', socket.id);
-    io.to(roomId).emit('user-count', Array.from(room.users));
-
-    // Send chat history to new user
-    socket.emit('chat-history', room.messages);
-
-    socket.on('chat-message', (roomId, text) => {
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const msg = { text, time };
-      room.messages.push(msg);
-      io.to(roomId).emit('chat-message', msg);
-    });
+    socket.on('offer', (room, to, offer) => socket.to(to).emit('offer', socket.id, offer));
+    socket.on('answer', (room, to, answer) => socket.to(to).emit('answer', socket.id, answer));
+    socket.on('candidate', (room, to, cand) => socket.to(to).emit('candidate', socket.id, cand));
 
     socket.on('disconnect', () => {
-      room.users.delete(socket.id);
-      socket.to(roomId).emit('user-disconnected', socket.id);
-      io.to(roomId).emit('user-count', Array.from(room.users));
-      if (room.users.size === 0) rooms.delete(roomId);
+      r.users.delete(socket.id);
+      io.to(room).emit('user-count', r.users.size);
+      socket.to(room).emit('user-disconnected', socket.id);
+      if (r.users.size === 0) rooms.delete(room);
     });
-  });
-
-  socket.on('offer', (roomId, targetId, offer) => {
-    io.to(targetId).emit('offer', socket.id, offer);
-  });
-
-  socket.on('answer', (roomId, targetId, answer) => {
-    io.to(targetId).emit('answer', socket.id, answer);
-  });
-
-  socket.on('ice-candidate', (roomId, targetId, candidate) => {
-    io.to(targetId).emit('ice-candidate', socket.id, candidate);
   });
 });
 
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => {
-  console.log(\`Server running on port \${PORT}\`);
-});
+http.listen(PORT, () => console.log('Hayden Meet running on port', PORT));
